@@ -8,11 +8,13 @@ from ..utils import (
     traverse_obj,
     try_get,
     unescapeHTML,
+    urlencode_postdata,
     url_or_none,
 )
 
 
 class RedditIE(InfoExtractor):
+    _NETRC_MACHINE = 'reddit'
     _VALID_URL = r'https?://(?P<host>(?:\w+\.)?reddit(?:media)?\.com)/(?P<slug>(?:(?:r|user)/[^/]+/)?comments/(?P<id>[^/?#&]+))'
     _TESTS = [{
         'url': 'https://www.reddit.com/r/videos/comments/6rrwyj/that_small_heart_attack/',
@@ -176,6 +178,25 @@ class RedditIE(InfoExtractor):
         'only_matching': True,
     }]
 
+    def _perform_login(self, username, password):
+        captcha = self._download_json(
+            'https://www.reddit.com/api/requires_captcha/login.json', None,
+            'Checking login requirement')['required']
+        if captcha:
+            raise ExtractorError('Reddit is requiring captcha before login', expected=True)
+        login = self._download_json(
+            f'https://www.reddit.com/api/login/{username}', None, data=urlencode_postdata({
+                'op': 'login-main',
+                'user': username,
+                'passwd': password,
+                'api_type': 'json',
+            }), note='Logging in', errnote='Login request failed')
+        errors = '; '.join(traverse_obj(login, ('json', 'errors', ..., 1)))
+        if errors:
+            raise ExtractorError(f'Unable to login, Reddit API says {errors}', expected=True)
+        elif not traverse_obj(login, ('json', 'data', 'cookie', {str})):
+            raise ExtractorError('Unable to login, no cookie was returned')
+
     def _real_extract(self, url):
         host, slug, video_id = self._match_valid_url(url).group('host', 'slug', 'id')
 
@@ -219,6 +240,7 @@ class RedditIE(InfoExtractor):
                 'url': unescapeHTML(thumbnail_url),
                 'width': int_or_none(src.get('width')),
                 'height': int_or_none(src.get('height')),
+                'http_headers': {'Accept': '*/*'},
             })
 
         for image in try_get(data, lambda x: x['preview']['images']) or []:
